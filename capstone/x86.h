@@ -180,9 +180,9 @@ typedef enum x86_prefix
 // This is associated with X86_OP_MEM operand type above
 typedef struct x86_op_mem
 {
-	x86_reg segment; // segment register (or X86_REG_INVALID if irrelevant)
-	x86_reg base;  // base register (or X86_REG_INVALID if irrelevant)
-	x86_reg index; // index register (or X86_REG_INVALID if irrelevant)
+    x86_reg segment; // segment register (or X86_REG_INVALID if irrelevant)
+    x86_reg base;  // base register (or X86_REG_INVALID if irrelevant)
+    x86_reg index; // index register (or X86_REG_INVALID if irrelevant)
     int scale;  // scale for index register
     int64_t disp;   // displacement value
 } x86_op_mem;
