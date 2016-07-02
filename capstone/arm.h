@@ -8,7 +8,6 @@
 extern "C" {
 #endif
 
-#include <stdint.h>
 #include "platform.h"
 
 #ifdef _MSC_VER
@@ -399,6 +398,9 @@ typedef enum arm_reg
     ARM_REG_FP = ARM_REG_R11,
     ARM_REG_IP = ARM_REG_R12,
 } arm_reg;
+
+
+
 
 //> ARM instruction
 typedef enum arm_insn

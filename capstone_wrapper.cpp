@@ -51,13 +51,21 @@ bool Capstone::Disassemble(size_t addr, const unsigned char data[MAX_DISASM_BUFF
 
 bool Capstone::Disassemble(size_t addr, const unsigned char* data, int size)
 {
-    if(!data)
+    if(!data || !size)
         return false;
 
     size_t codeSize = size;
     uint64_t addr64 = addr;
 
     return (mSuccess = cs_disasm_iter(mHandle, &data, &codeSize, &addr64, mInstr));
+}
+
+bool Capstone::DisassembleSafe(size_t addr, const unsigned char* data, int size)
+{
+    unsigned char dataSafe[MAX_DISASM_BUFFER];
+    memset(dataSafe, 0, sizeof(dataSafe));
+    memcpy(dataSafe, data, min(MAX_DISASM_BUFFER, size));
+    return Disassemble(addr, dataSafe);
 }
 
 const cs_insn* Capstone::GetInstr() const
@@ -159,7 +167,6 @@ std::string Capstone::OperandText(int opindex) const
     }
     break;
 
-    case X86_OP_FP:
     case X86_OP_INVALID:
     {
     }
@@ -245,17 +252,42 @@ int Capstone::OpCount() const
     return x86().op_count;
 }
 
-cs_x86_op Capstone::operator[](int index) const
+const cs_x86_op & Capstone::operator[](int index) const
 {
-    if(!Success() || index >= OpCount())
+    if(!Success() || index < 0 || index >= OpCount())
         DebugBreak();
     return x86().operands[index];
+}
+
+static bool isSafe64NopRegOp(const cs_x86_op & op)
+{
+    if(op.type != X86_OP_REG)
+        return true; //a non-register is safe
+#ifdef _WIN64
+    switch(op.reg)
+    {
+    case X86_REG_EAX:
+    case X86_REG_EBX:
+    case X86_REG_ECX:
+    case X86_REG_EDX:
+    case X86_REG_EBP:
+    case X86_REG_ESP:
+    case X86_REG_ESI:
+    case X86_REG_EDI:
+        return false; //32 bit register modifications clear the high part of the 64 bit register
+    default:
+        return true; //all other registers are safe
+    }
+#else
+    return true;
+#endif //_WIN64
 }
 
 bool Capstone::IsNop() const
 {
     if(!Success())
         return false;
+    const auto & ops = x86().operands;
     cs_x86_op op;
     switch(GetId())
     {
@@ -287,11 +319,16 @@ bool Capstone::IsNop() const
     case X86_INS_MOVUPD:
     case X86_INS_XCHG:
         // mov edi, edi
-        return (x86().operands[0].type == X86_OP_REG && x86().operands[1].type == X86_OP_REG && x86().operands[0].reg == x86().operands[1].reg);
+        return ops[0].type == X86_OP_REG && ops[1].type == X86_OP_REG && ops[0].reg == ops[1].reg && isSafe64NopRegOp(ops[0]);
     case X86_INS_LEA:
+    {
         // lea eax, [eax + 0]
-        op = x86().operands[1];
-        return (op.type == X86_OP_MEM && op.mem.index == X86_OP_INVALID && op.mem.disp == 0 && op.mem.base == x86().operands[0].reg);
+        auto reg = ops[0].reg;
+        auto mem = ops[1].mem;
+        return ops[0].type == X86_OP_REG && ops[1].type == X86_OP_MEM && mem.disp == 0 &&
+               ((mem.index == X86_REG_INVALID && mem.base == reg) ||
+                (mem.index == reg && mem.base == X86_REG_INVALID && mem.scale == 1)) && isSafe64NopRegOp(ops[0]);
+    }
     case X86_INS_JMP:
     case X86_INS_JA:
     case X86_INS_JAE:
@@ -315,19 +352,22 @@ bool Capstone::IsNop() const
     case X86_INS_LOOPE:
     case X86_INS_LOOPNE:
         // jmp 0
-        op = x86().operands[0];
-        return (op.type == X86_OP_IMM && op.imm == 0);
+        op = ops[0];
+        return op.type == X86_OP_IMM && op.imm == 0;
     case X86_INS_SHL:
     case X86_INS_SHR:
     case X86_INS_ROL:
     case X86_INS_ROR:
     case X86_INS_SAR:
     case X86_INS_SAL:
+        // shl eax, 0
+        op = ops[1];
+        return op.type == X86_OP_IMM && op.imm == 0 && isSafe64NopRegOp(ops[0]);
     case X86_INS_SHLD:
     case X86_INS_SHRD:
-        // shl eax, 0
-        op = x86().operands[x86().op_count - 1];
-        return (op.type == X86_OP_IMM && op.imm == 0);
+        // shld eax, ebx, 0
+        op = ops[2];
+        return op.type == X86_OP_IMM && op.imm == 0 && isSafe64NopRegOp(ops[0]) && isSafe64NopRegOp(ops[1]);
     default:
         return false;
     }

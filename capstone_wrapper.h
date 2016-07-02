@@ -17,6 +17,7 @@ public:
     ~Capstone();
     bool Disassemble(size_t addr, const unsigned char data[MAX_DISASM_BUFFER]);
     bool Disassemble(size_t addr, const unsigned char* data, int size);
+    bool DisassembleSafe(size_t addr, const unsigned char* data, int size);
     const cs_insn* GetInstr() const;
     bool Success() const;
     const char* RegName(x86_reg reg) const;
@@ -31,7 +32,7 @@ public:
     x86_insn GetId() const;
     std::string InstructionText() const;
     int OpCount() const;
-    cs_x86_op operator[](int index) const;
+    const cs_x86_op & operator[](int index) const;
     bool IsNop() const;
     bool IsInt3() const;
     std::string Mnemonic() const;
