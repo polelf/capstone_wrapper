@@ -401,6 +401,7 @@ typedef enum arm_reg
 
 
 
+
 //> ARM instruction
 typedef enum arm_insn
 {
