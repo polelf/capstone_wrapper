@@ -40,6 +40,10 @@ public:
     const char* MemSizeName(int size) const;
     size_t BranchDestination() const;
     size_t ResolveOpValue(int opindex, const std::function<size_t(x86_reg)> & resolveReg) const;
+    bool IsBranchGoingToExecute(size_t cflags, size_t ccx) const;
+    static bool IsBranchGoingToExecute(x86_insn id, size_t cflags, size_t ccx);
+    bool IsConditionalGoingToExecute(size_t cflags, size_t ccx) const;
+    static bool IsConditionalGoingToExecute(x86_insn id, size_t cflags, size_t ccx);
 
 private:
     static csh mHandle;
