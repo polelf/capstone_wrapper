@@ -127,7 +127,7 @@ std::string Capstone::OperandText(int opindex) const
     case X86_OP_MEM:
     {
         const auto & mem = op.mem;
-        if(op.mem.base == X86_REG_RIP)  //rip-relative
+        if(op.mem.base == X86_REG_RIP) //rip-relative
         {
             sprintf_s(temp, "%llX", Address() + op.mem.disp + Size());
             result += temp;
@@ -232,7 +232,7 @@ x86_insn Capstone::GetId() const
     return x86_insn(mInstr->id);
 }
 
-std::string Capstone::InstructionText() const
+std::string Capstone::InstructionText(bool replaceRipRelative) const
 {
     if(!Success())
         return "???";
@@ -241,6 +241,29 @@ std::string Capstone::InstructionText() const
     {
         result += " ";
         result += mInstr->op_str;
+    }
+    if(replaceRipRelative)
+    {
+        //replace [rip +/- 0x?] with the actual address
+        bool ripPlus = true;
+        auto found = result.find("[rip + ");
+        if(found == std::string::npos)
+        {
+            ripPlus = false;
+            found = result.find("[rip - ");
+        }
+        if(found != std::string::npos)
+        {
+            auto wVA = Address();
+            auto end = result.find("]", found);
+            auto ripStr = result.substr(found + 1, end - found - 1);
+            uint64_t offset;
+            sscanf_s(ripStr.substr(ripStr.rfind(' ') + 1).c_str(), "%llX", &offset);
+            auto dest = ripPlus ? (wVA + offset + Size()) : (wVA - offset + Size());
+            char buf[20];
+            sprintf_s(buf, "0x%llx", dest);
+            result.replace(found + 1, ripStr.length(), buf);
+        }
     }
     return result;
 }
@@ -644,5 +667,159 @@ bool Capstone::IsConditionalGoingToExecute(x86_insn id, size_t cflags, size_t cc
         return bSF;
     default:
         return true;
+    }
+}
+
+void Capstone::RegInfo(uint8_t regs[X86_REG_ENDING]) const
+{
+    memset(regs, 0, sizeof(uint8_t) * X86_REG_ENDING);
+    if(!Success() || IsNop())
+        return;
+    for(int i = 0; i < OpCount(); i++)
+    {
+        const auto & op = x86().operands[i];
+        switch(op.type)
+        {
+        case X86_OP_REG:
+            if((op.access & CS_AC_READ) == CS_AC_READ)
+                regs[op.reg] |= Read | Explicit;
+            if((op.access & CS_AC_WRITE) == CS_AC_WRITE)
+                regs[op.reg] |= Write | Explicit;
+            break;
+
+        case X86_OP_MEM:
+        {
+            if(op.mem.segment == X86_REG_INVALID)
+            {
+                switch(op.mem.base)
+                {
+#ifdef _WIN64
+                case X86_REG_RSP:
+                case X86_REG_RBP:
+#else //x86
+                case X86_REG_ESP:
+                case X86_REG_EBP:
+#endif //_WIN64
+                    regs[X86_REG_SS] |= Read | Explicit;
+                    break;
+                default:
+                    regs[X86_REG_DS] |= Read | Explicit;
+                    break;
+                }
+            }
+            else
+                regs[op.mem.segment] |= Read | Explicit;
+            regs[op.mem.base] |= Read | Explicit;
+            regs[op.mem.index] |= Read | Explicit;
+        }
+        break;
+
+        default:
+            break;
+        }
+    }
+    const cs_detail* detail = GetInstr()->detail;
+    for(uint8_t i = 0; i < detail->regs_read_count; i++)
+        regs[detail->regs_read[i]] |= Read | Implicit;
+    for(uint8_t i = 0; i < detail->regs_write_count; i++)
+        regs[detail->regs_write[i]] |= Write | Implicit;
+    if(InGroup(CS_GRP_CALL) || InGroup(CS_GRP_RET) || InGroup(CS_GRP_JUMP) || IsLoop())
+#ifdef _WIN64
+        regs[X86_REG_RIP] = Write | Implicit;
+#else //x86
+        regs[X86_REG_EIP] = Write | Implicit;
+#endif //_WIN64
+}
+
+void Capstone::FlagInfo(uint8_t info[FLAG_ENDING]) const
+{
+    memset(info, 0, sizeof(uint8_t) * FLAG_ENDING);
+    if(!Success())
+        return;
+    auto eflags = x86().eflags;
+#define setFlagInfo(flag, access, test) info[flag] |= (eflags & test) == test ? access : 0
+    //Write
+    setFlagInfo(FLAG_AF, Modify, X86_EFLAGS_MODIFY_AF);
+    setFlagInfo(FLAG_CF, Modify, X86_EFLAGS_MODIFY_CF);
+    setFlagInfo(FLAG_SF, Modify, X86_EFLAGS_MODIFY_SF);
+    setFlagInfo(FLAG_ZF, Modify, X86_EFLAGS_MODIFY_ZF);
+    setFlagInfo(FLAG_PF, Modify, X86_EFLAGS_MODIFY_PF);
+    setFlagInfo(FLAG_OF, Modify, X86_EFLAGS_MODIFY_OF);
+    setFlagInfo(FLAG_TF, Modify, X86_EFLAGS_MODIFY_TF);
+    setFlagInfo(FLAG_IF, Modify, X86_EFLAGS_MODIFY_IF);
+    setFlagInfo(FLAG_DF, Modify, X86_EFLAGS_MODIFY_DF);
+    setFlagInfo(FLAG_NT, Modify, X86_EFLAGS_MODIFY_NT);
+    setFlagInfo(FLAG_RF, Modify, X86_EFLAGS_MODIFY_RF);
+    //None
+    setFlagInfo(FLAG_OF, Prior, X86_EFLAGS_PRIOR_OF);
+    setFlagInfo(FLAG_SF, Prior, X86_EFLAGS_PRIOR_SF);
+    setFlagInfo(FLAG_ZF, Prior, X86_EFLAGS_PRIOR_ZF);
+    setFlagInfo(FLAG_AF, Prior, X86_EFLAGS_PRIOR_AF);
+    setFlagInfo(FLAG_PF, Prior, X86_EFLAGS_PRIOR_PF);
+    setFlagInfo(FLAG_CF, Prior, X86_EFLAGS_PRIOR_CF);
+    setFlagInfo(FLAG_TF, Prior, X86_EFLAGS_PRIOR_TF);
+    setFlagInfo(FLAG_IF, Prior, X86_EFLAGS_PRIOR_IF);
+    setFlagInfo(FLAG_DF, Prior, X86_EFLAGS_PRIOR_DF);
+    setFlagInfo(FLAG_NT, Prior, X86_EFLAGS_PRIOR_NT);
+    //Write
+    setFlagInfo(FLAG_OF, Reset, X86_EFLAGS_RESET_OF);
+    setFlagInfo(FLAG_CF, Reset, X86_EFLAGS_RESET_CF);
+    setFlagInfo(FLAG_DF, Reset, X86_EFLAGS_RESET_DF);
+    setFlagInfo(FLAG_IF, Reset, X86_EFLAGS_RESET_IF);
+    setFlagInfo(FLAG_SF, Reset, X86_EFLAGS_RESET_SF);
+    setFlagInfo(FLAG_AF, Reset, X86_EFLAGS_RESET_AF);
+    setFlagInfo(FLAG_TF, Reset, X86_EFLAGS_RESET_TF);
+    setFlagInfo(FLAG_NT, Reset, X86_EFLAGS_RESET_NT);
+    setFlagInfo(FLAG_PF, Reset, X86_EFLAGS_RESET_PF);
+    //Write
+    setFlagInfo(FLAG_CF, Set, X86_EFLAGS_SET_CF);
+    setFlagInfo(FLAG_DF, Set, X86_EFLAGS_SET_DF);
+    setFlagInfo(FLAG_IF, Set, X86_EFLAGS_SET_IF);
+    //Read
+    setFlagInfo(FLAG_OF, Test, X86_EFLAGS_TEST_OF);
+    setFlagInfo(FLAG_SF, Test, X86_EFLAGS_TEST_SF);
+    setFlagInfo(FLAG_ZF, Test, X86_EFLAGS_TEST_ZF);
+    setFlagInfo(FLAG_PF, Test, X86_EFLAGS_TEST_PF);
+    setFlagInfo(FLAG_CF, Test, X86_EFLAGS_TEST_CF);
+    setFlagInfo(FLAG_NT, Test, X86_EFLAGS_TEST_NT);
+    setFlagInfo(FLAG_DF, Test, X86_EFLAGS_TEST_DF);
+    //None
+    setFlagInfo(FLAG_OF, Undefined, X86_EFLAGS_UNDEFINED_OF);
+    setFlagInfo(FLAG_SF, Undefined, X86_EFLAGS_UNDEFINED_SF);
+    setFlagInfo(FLAG_ZF, Undefined, X86_EFLAGS_UNDEFINED_ZF);
+    setFlagInfo(FLAG_PF, Undefined, X86_EFLAGS_UNDEFINED_PF);
+    setFlagInfo(FLAG_AF, Undefined, X86_EFLAGS_UNDEFINED_AF);
+    setFlagInfo(FLAG_CF, Undefined, X86_EFLAGS_UNDEFINED_CF);
+#undef setFlagInfo
+}
+
+const char* Capstone::FlagName(Flag flag) const
+{
+    switch(flag)
+    {
+    case FLAG_AF:
+        return "AF";
+    case FLAG_CF:
+        return "CF";
+    case FLAG_SF:
+        return "SF";
+    case FLAG_ZF:
+        return "ZF";
+    case FLAG_PF:
+        return "PF";
+    case FLAG_OF:
+        return "OF";
+    case FLAG_TF:
+        return "TF";
+    case FLAG_IF:
+        return "IF";
+    case FLAG_DF:
+        return "DF";
+    case FLAG_NT:
+        return "NT";
+    case FLAG_RF:
+        return "RF";
+    default:
+        return nullptr;
     }
 }
